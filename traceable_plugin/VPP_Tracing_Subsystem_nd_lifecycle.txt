@@ -1,0 +1,301 @@
+===========================================================
+               VPP TRACING SUBSYSTEM
+        (Architecture + Flow + Plugin Integration)
+===========================================================
+
+
+==============================
+1️⃣  WHY TRACING EXISTS
+==============================
+
+VPP processes packets in a vectorized graph.
+There is no per-packet printf (that would destroy performance).
+
+Tracing allows:
+- Capturing selected packets
+- Recording metadata at each node
+- Printing a structured trace later
+- Debugging graph path behavior
+
+Tracing is:
+  ✔ selective
+  ✔ per-packet
+  ✔ zero-cost when disabled
+  ✔ memory-efficient
+
+
+==============================
+2️⃣  HIGH LEVEL FLOW
+==============================
+
+User:
+    trace add <node-name> N
+
+VPP:
+    Marks next N packets at that node as "traced"
+
+Packet enters node:
+    if (PREDICT_FALSE(b0->flags & VLIB_BUFFER_IS_TRACED))
+        store trace data
+
+After capture:
+    show trace
+
+VPP:
+    Calls node-specific format function
+    Prints structured output
+
+
+==============================
+3️⃣  CORE INTERNAL STRUCTURES
+==============================
+
+
+--------------------------------
+vlib_buffer_t
+--------------------------------
+
+Every packet in VPP is wrapped in:
+
+struct vlib_buffer_t {
+    u32 flags;
+    ...
+};
+
+Important flag:
+
+VLIB_BUFFER_IS_TRACED
+
+When set → node knows to record trace data.
+
+
+--------------------------------
+vlib_trace_header_t
+--------------------------------
+
+Each traced packet has a trace record:
+
+struct vlib_trace_header_t {
+    u32 node_index;
+    u32 data_size;
+    u8  data[0];   // node-specific trace struct
+};
+
+Each node appends its own trace data here.
+
+
+--------------------------------
+Node Registration
+--------------------------------
+
+In your plugin:
+
+VLIB_REGISTER_NODE (traceplugin_node) = {
+    .name = "traceplugin",
+    .vector_size = sizeof (u32),
+    .format_trace = format_traceplugin_trace,
+};
+
+That `.format_trace` is CRITICAL.
+
+This connects your formatting function to VPP's trace system.
+
+
+==============================
+4️⃣  WHAT HAPPENS INSIDE YOUR NODE
+==============================
+
+Inside your node function:
+
+if (PREDICT_FALSE (b0->flags & VLIB_BUFFER_IS_TRACED))
+{
+    traceplugin_trace_t * t;
+
+    t = vlib_add_trace (vm, node, b0, sizeof (*t));
+
+    t->sw_if_index = sw_if_index0;
+    t->pkt_len     = vlib_buffer_length_in_chain (vm, b0);
+}
+
+Explanation:
+
+Step 1:
+    Check if this packet is marked for tracing.
+
+Step 2:
+    vlib_add_trace()
+        - Allocates memory inside trace buffer
+        - Returns pointer to your trace struct
+
+Step 3:
+    You fill YOUR trace struct
+        (this is custom per node)
+
+No printing happens here.
+Only data storage.
+
+
+==============================
+5️⃣  YOUR TRACE STRUCT
+==============================
+
+Example:
+
+typedef struct {
+    u32 sw_if_index;
+    u32 pkt_len;
+} traceplugin_trace_t;
+
+This is:
+    Your node’s private trace metadata.
+
+Every traced packet passing this node
+gets one copy of this struct.
+
+
+==============================
+6️⃣  YOUR FORMAT FUNCTION
+==============================
+
+Your function:
+
+static u8 *
+format_traceplugin_trace (u8 * s, va_list * args)
+{
+  CLIB_UNUSED (vlib_main_t * vm) =
+      va_arg (*args, vlib_main_t *);
+
+  CLIB_UNUSED (vlib_node_t * node) =
+      va_arg (*args, vlib_node_t *);
+
+  traceplugin_trace_t * t =
+      va_arg (*args, traceplugin_trace_t *);
+
+  s = format (s,
+              "traceplugin: sw_if_index %u len %u",
+              t->sw_if_index,
+              t->pkt_len);
+
+  return s;
+}
+
+What happens:
+
+When you run:
+
+    show trace
+
+VPP does:
+
+for each trace record:
+    call node->format_trace()
+
+Arguments passed automatically:
+
+    vm
+    node
+    pointer to your trace struct
+
+You extract them via va_arg().
+
+You then format the string.
+
+The return value is:
+    The formatted string buffer.
+
+
+==============================
+7️⃣  FULL TRACE LIFECYCLE
+==============================
+
+Step 1:
+    trace add traceplugin 5
+
+Step 2:
+    First 5 packets entering traceplugin
+    get VLIB_BUFFER_IS_TRACED flag
+
+Step 3:
+    Inside node:
+        vlib_add_trace()
+        store metadata
+
+Step 4:
+    User runs:
+        show trace
+
+Step 5:
+    VPP:
+        Walks trace buffer
+        For each node record:
+            Calls format_traceplugin_trace()
+            Prints returned string
+
+Done.
+
+
+==============================
+8️⃣  IMPORTANT DESIGN PRINCIPLES
+==============================
+
+✔ No printing in fast path
+✔ Zero overhead when not tracing
+✔ Per-node custom metadata
+✔ Separation:
+    - Data collection (node)
+    - Data formatting (format function)
+✔ Trace memory stored per packet
+
+
+==============================
+9️⃣  WHY va_list IS USED
+==============================
+
+VPP uses generic function pointer:
+
+typedef u8 * (*format_function_t)
+    (u8 * s, va_list * args);
+
+So every format function must:
+    Extract its arguments from va_list.
+
+Order is fixed by VPP.
+
+
+==============================
+🔟  WHAT YOU ARE REALLY LEARNING
+==============================
+
+Tracing teaches:
+
+✔ Buffer internals
+✔ Node execution model
+✔ Per-packet metadata storage
+✔ Graph debug mechanism
+✔ Runtime introspection
+
+
+===========================================================
+SUMMARY
+===========================================================
+
+Node receives packet
+    ↓
+If traced
+    ↓
+Allocate trace struct
+    ↓
+Store metadata
+    ↓
+Later:
+    format function prints metadata
+
+
+Tracing is NOT logging.
+Tracing is structured packet path recording.
+
+
+===========================================================
+END
+===========================================================
+
