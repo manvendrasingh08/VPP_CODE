@@ -1,0 +1,31 @@
+# Start VPP in background
+make build-release
+make run-release
+
+#VPP shell
+	create tap id 0 host-if-name vpp-tap0
+	set interface state tap0 up
+	set interface ip address tap0 10.10.10.1/24
+
+	# Attach your plugin on ip4-unicast
+	set interface feature tap0 traceplugin arc ip4-unicast
+
+	show interface features tap0          
+
+-----------
+
+# Configure Linux side of TAP
+sudo ip addr add 10.10.10.2/24 dev vpp-tap0
+sudo ip link set vpp-tap0 up
+
+# Generate traffic
+ping 10.10.10.1
+
+###### trace add virtio-input 10  (* in this we will not do 'trace add traceplugin 10' as
+									 traceplugin is a intermediate node and input node is req for trace to work.)
+							
+	Noe in the trace output we'll see the tracplugin node and the print statement we added.
+									 )
+
+# in VPP shell run
+  show traceplugin
